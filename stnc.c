@@ -1,110 +1,109 @@
-//
-// Created by Lara Abu Hamad on 08/05/2023.
-//
-
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
 
-#define BUFFER_SIZE 1024
+#define MAX_BUFFER 1024
 
-void *receive_handler(void *socket) {
-    int sockfd = *(int *)socket;
-    char buffer[BUFFER_SIZE];
+void handle_client(int client_sock) {
+    char buffer[MAX_BUFFER];
+    fd_set readfds;
+    int max_fd;
 
     while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        ssize_t n = recv(sockfd, buffer, BUFFER_SIZE, 0);
-        if (n <= 0) {
-            break;
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+        FD_SET(client_sock, &readfds);
+        max_fd = (STDIN_FILENO > client_sock) ? STDIN_FILENO : client_sock;
+
+        if (select(max_fd + 1, &readfds, NULL, NULL, NULL) < 0) {
+            perror("select");
+            exit(EXIT_FAILURE);
         }
-        printf("%s\n", buffer);
+
+        if (FD_ISSET(STDIN_FILENO, &readfds)) {
+            fgets(buffer, MAX_BUFFER, stdin);
+            send(client_sock, buffer, strlen(buffer), 0);
+        }
+
+        if (FD_ISSET(client_sock, &readfds)) {
+            int nbytes = recv(client_sock, buffer, MAX_BUFFER - 1, 0);
+            if (nbytes <= 0) {
+                if (nbytes < 0) {
+                    perror("recv");
+                }
+                close(client_sock);
+                exit(EXIT_SUCCESS);
+            }
+            buffer[nbytes] = '\0';
+            printf("Received: %s", buffer);
+        }
     }
-    close(sockfd);
-    return NULL;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 3) {
-        printf("Usage: %s -c IP PORT (client) or %s -s PORT (server)\n", argv[0], argv[0]);
-        return 1;
+    if (argc < 3 || (strcmp(argv[1], "-c") == 0 && argc != 4)) {
+        fprintf(stderr, "Usage: %s -c IP PORT or %s -s PORT\n", argv[0], argv[0]);
+        exit(EXIT_FAILURE);
     }
 
-    int sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sockfd < 0) {
+    int sockfd;
+    struct sockaddr_in addr;
+
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket");
-        return 1;
+        exit(EXIT_FAILURE);
     }
 
-    if (strcmp(argv[1], "-s") == 0) {
-        int port = atoi(argv[2]);
-        struct sockaddr_in server_addr;
-        memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_addr.s_addr = INADDR_ANY;
-        server_addr.sin_port = htons(port);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
 
-        if (bind(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+    if (strcmp(argv[1], "-c") == 0) {
+        addr.sin_port = htons(atoi(argv[3]));
+        addr.sin_addr.s_addr = inet_addr(argv[2]);
+
+        if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            perror("connect");
+            exit(EXIT_FAILURE);
+        }
+    } else if (strcmp(argv[1], "-s") == 0) {
+        addr.sin_port = htons(atoi(argv[2]));
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+        if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             perror("bind");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
         if (listen(sockfd, 1) < 0) {
             perror("listen");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
+        int client_sock;
         struct sockaddr_in client_addr;
-        socklen_t client_addr_len = sizeof(client_addr);
-        int client_fd = accept(sockfd, (struct sockaddr *) &client_addr, &client_addr_len);
-        if (client_fd < 0) {
+        socklen_t client_len = sizeof(client_addr);
+
+        if ((client_sock = accept(sockfd, (struct sockaddr *)&client_addr, &client_len)) < 0) {
             perror("accept");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
-        sockfd = client_fd;
-    } else if (strcmp(argv[1], "-c") == 0) {
-        int port = atoi(argv[3]);
-        struct sockaddr_in server_addr;
-        memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
-
-        if (inet_pton(AF_INET, argv[2], &server_addr.sin_addr) <= 0) {
-            perror("inet_pton");
-            return 1;
-        }
-
-        if (connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
-            perror("connect");
-            return 1;
-        }
+        close(sockfd);
+        sockfd = client_sock;
     } else {
-        printf("Invalid option. Usage: %s -c IP PORT (client) or %s -s PORT (server)\n", argv[0], argv[0]);
-        return 1;
-    }
-    pthread_t recv_thread;
-    if (pthread_create(&recv_thread, NULL, receive_handler, &sockfd) < 0) {
-        perror("pthread_create");
-        return 1;
+        fprintf(stderr, "Invalid option: %s\n", argv[1]);
+        exit(EXIT_FAILURE);
     }
 
-    char buffer[BUFFER_SIZE];
-    while (1) {
-        fgets(buffer, BUFFER_SIZE, stdin);
-        ssize_t n = send(sockfd, buffer, strlen(buffer), 0);
-        if (n <= 0) {
-            break;
-        }
-    }
-
+    handle_client(sockfd);
     close(sockfd);
-    pthread_join(recv_thread, NULL);
 
     return 0;
 }
