@@ -7,6 +7,7 @@
 #include <ifaddrs.h>
 #include "stnc.h"
 
+ClientInfo info;
 //<type> ipv4,ipv6,mmap,pipe,uds
 //<param> udp, tcp, dgram, stream, file name:
 
@@ -127,7 +128,7 @@ void report_result(PerformanceTest *test) {
     printf("Hash: %s, Time: %lld ms\n", test->data_hash, test->transmission_time);
 }
 
-Connection *create_connection(char *ip, long port, CommunicationType type, char *filename, int is_server) {
+Connection *create_connection(char *ip, long port, CommunicationType type, char *param, int is_server) {
 
     Connection *connection = malloc(sizeof(Connection) + 1);
 
@@ -138,13 +139,12 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
     connection->ip = ip;
     connection->port = port;
     connection->type = type;
-    connection->filename = filename;
-
+    connection->param = param;
 
     switch (type) {
         case IPV4_TCP:
             connection->socket_fd = is_server ? create_tcp_server_socket(ip, port, AF_INET)
-                                              : create_tcp_client_socket(ip, port, AF_INET);
+                                              : create_tcp_client_socket(ip, port, AF_INET, get_type_str(type));
             if (connection->socket_fd == -1) {
                 fprintf(stderr, "Failed to create IPV4 TCP socket.\n");
                 free(connection);
@@ -153,7 +153,7 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
             break;
         case IPV4_UDP:
             connection->socket_fd = is_server ? create_udp_server_socket(ip, port, AF_INET)
-                                              : create_udp_client_socket(ip, port, AF_INET);
+                                              : create_udp_client_socket(ip, port, AF_INET, get_type_str(type));
             if (connection->socket_fd == -1) {
                 fprintf(stderr, "Failed to create IPV4 UDP socket.\n");
                 free(connection);
@@ -162,7 +162,7 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
             break;
         case IPV6_TCP:
             connection->socket_fd = is_server ? create_tcp_server_socket(ip, port, AF_INET6)
-                                              : create_tcp_client_socket(ip, port, AF_INET6);
+                                              : create_tcp_client_socket(ip, port, AF_INET6, get_type_str(type));
             if (connection->socket_fd == -1) {
                 fprintf(stderr, "Failed to create IPV6 TCP socket.\n");
                 free(connection);
@@ -171,7 +171,7 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
             break;
         case IPV6_UDP:
             connection->socket_fd = is_server ? create_udp_server_socket(ip, port, AF_INET6)
-                                              : create_udp_client_socket(ip, port, AF_INET6);
+                                              : create_udp_client_socket(ip, port, AF_INET6, get_type_str(type));
             if (connection->socket_fd == -1) {
                 fprintf(stderr, "Failed to create IPV6 UDP socket.\n");
                 free(connection);
@@ -180,8 +180,9 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
             break;
         case UDS_DGRAM:
         case UDS_STREAM:
-            connection->socket_fd = is_server ? create_uds_server_socket(filename, type == UDS_STREAM)
-                                              : create_uds_client_socket(filename, type == UDS_STREAM);
+            connection->socket_fd = is_server ? create_uds_server_socket(param, type == UDS_STREAM)
+                                              : create_uds_client_socket(param, port, type == UDS_STREAM,
+                                                                         get_type_str(type));
             if (connection->socket_fd == -1) {
                 fprintf(stderr, "Failed to create Unix Domain Socket.\n");
                 free(connection);
@@ -192,7 +193,7 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
             if (is_server)
                 connection->mmap_fd = create_mmap_file(connection);
             else
-                connection->mmap_fd = create_mmap_filer(connection);
+                connection->mmap_fd = create_mmap_filer(connection, port, get_type_str(type));
             if (connection->mmap_fd == -1) {
                 fprintf(stderr, "Failed to create memory-mapped file.\n");
                 free(connection);
@@ -211,7 +212,7 @@ Connection *create_connection(char *ip, long port, CommunicationType type, char 
                 printf("sss1-\n");
             } else {
                 printf("sss2+\n");
-                if (create_named_pipew(connection) == -1) {
+                if (create_named_pipew(connection, port, get_type_str(type)) == -1) {
                     fprintf(stderr, "Failed to create named pipe.\n");
                     free(connection);
                     exit(EXIT_FAILURE);
@@ -437,13 +438,14 @@ int create_uds_server_socket(char *filename, int is_stream) {
     return socket_fd;
 }
 
-int create_tcp_client_socket(char *ip, long port, int domain) {
+int create_tcp_client_socket(char *ip, long port, int domain, char *type) {
     struct sockaddr_in addr_in;
     struct sockaddr_in6 addr_in6;
     struct sockaddr *addr;
     char port_str[6]; // 5 digits for port number + null terminator
     sprintf(port_str, "%ld", port);
 
+    send_type_to_server(port, type);
 // Create socket
     int socket_fd = socket(domain, SOCK_STREAM, 0);
     if (socket_fd == -1) {
@@ -478,16 +480,17 @@ int create_tcp_client_socket(char *ip, long port, int domain) {
         perror("connect");
         return -1;
     }
-
+    send_initial_info_to_server(&info, socket_fd);
     return socket_fd;
 }
 
-int create_udp_client_socket(char *ip, long port, int domain) {
+int create_udp_client_socket(char *ip, long port, int domain, char *type) {
     struct sockaddr_in addr_in;
     struct sockaddr_in6 addr_in6;
     struct sockaddr *addr;
     char port_str[6]; // 5 digits for port number + null terminator
     sprintf(port_str, "%ld", port);
+    send_type_to_server(port, type);
 
 // Create socket
     int socket_fd = socket(domain, SOCK_DGRAM, 0);
@@ -523,11 +526,11 @@ int create_udp_client_socket(char *ip, long port, int domain) {
         perror("connect");
         return -1;
     }
-
+    send_initial_info_to_server(&info, socket_fd);
     return socket_fd;
 }
 
-int create_uds_client_socket(char *filename, int is_stream) {
+int create_uds_client_socket(char *filename, long port, int is_stream, char *type) {
     struct sockaddr_un addr;
 
 // Create socket
@@ -536,6 +539,7 @@ int create_uds_client_socket(char *filename, int is_stream) {
         perror("Failed to create socket");
         return -1;
     }
+    send_type_to_server(port, type);
 
 // Set up the server address structure
     memset(&addr, 0, sizeof(addr));
@@ -547,21 +551,21 @@ int create_uds_client_socket(char *filename, int is_stream) {
         perror("connect");
         return -1;
     }
-
+    send_initial_info_to_server(&info, socket_fd);
     return socket_fd;
 }
 
 int create_mmap_file(Connection *connection) {
 // Check if the file already exists. If so, remove it.
-    if (access(connection->filename, F_OK) != -1) {
-        if (remove(connection->filename) == -1) {
+    if (access(connection->param, F_OK) != -1) {
+        if (remove(connection->param) == -1) {
             perror("remove");
             return -1;
         }
     }
 
 // Open the file
-    connection->mmap_fd = open(connection->filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    connection->mmap_fd = open(connection->param, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     if (connection->mmap_fd == -1) {
         perror("open");
         return -1;
@@ -591,15 +595,16 @@ int create_mmap_file(Connection *connection) {
     return 0;
 }
 
-int create_mmap_filer(Connection *connection) {
+int create_mmap_filer(Connection *connection, long port, char *type) {
 // Check if the file already exists. If so, remove it.
 
 // Open the file
-    connection->mmap_fd = open(connection->filename, O_RDWR, S_IRUSR | S_IWUSR);
+    connection->mmap_fd = open(connection->param, O_RDWR, S_IRUSR | S_IWUSR);
     if (connection->mmap_fd == -1) {
         perror("openr");
         return -1;
     }
+    send_type_to_server(port, type);
 
     connection->mmap_size = CHUNK_SIZE;
 
@@ -613,17 +618,18 @@ int create_mmap_filer(Connection *connection) {
         close(connection->mmap_fd);
         return -1;
     }
+    send_initial_info_to_server(&info, connection->socket_fd);
 
     return 0;
 }
 
 int create_named_pipe(Connection *connection) {
-    printf(" %s\n", connection->filename);
+    printf(" %s\n", connection->param);
 
-    mkfifo(connection->filename, 0666);
+    mkfifo(connection->param, 0666);
     // Open the pipe
-    connection->pipe_fd[0] = open(connection->filename, O_RDONLY);
-    printf("r %s\n", connection->filename);
+    connection->pipe_fd[0] = open(connection->param, O_RDONLY);
+    printf("r %s\n", connection->param);
     if (connection->pipe_fd[0] == -1) {
         perror("open");
 
@@ -635,14 +641,15 @@ int create_named_pipe(Connection *connection) {
     return 0;
 }
 
-int create_named_pipew(Connection *connection) {
+int create_named_pipew(Connection *connection, long port, char *type) {
 
     // Create the named pipe (FIFO)
-    mkfifo(connection->filename, 0666);
+    mkfifo(connection->param, 0666);
+    send_type_to_server(port, type);
 
     // Open the pipe
-    connection->pipe_fd[1] = open(connection->filename, O_WRONLY /*| O_NONBLOCK*/);
-    printf("w %s\n", connection->filename);
+    connection->pipe_fd[1] = open(connection->param, O_WRONLY /*| O_NONBLOCK*/);
+    printf("w %s\n", connection->param);
     if (connection->pipe_fd[1] == -1) {
         perror("open");
 
@@ -650,6 +657,7 @@ int create_named_pipew(Connection *connection) {
         if (connection->pipe_fd[1] != -1) close(connection->pipe_fd[1]);
         return -1;
     }
+    send_initial_info_to_server(&info, connection->socket_fd);
     return 0;
 }
 
@@ -809,6 +817,129 @@ void handle_client_pB(Connection *conn) {
     printf("Client disconnected\n");
 }
 
+void send_initial_info_to_server(ClientInfo *info, int sockfd) {
+    if (send(sockfd, info, sizeof(*info), 0) == -1) {
+        perror("Error sending initial info to server");
+        exit(EXIT_FAILURE);
+    }
+}
+
+char *get_type_str(CommunicationType type) {
+    switch (type) {
+        case IPV4_TCP:
+            return "ipv4_tcp";
+        case IPV4_UDP:
+            return "ipv4_udp";
+        case IPV6_TCP:
+            return "ipv6_tcp";
+        case IPV6_UDP:
+            return "ipv6_udp";
+        case MMAP:
+            return "mmap";
+        case PIPE:
+            return "pipe";
+        case UDS_DGRAM:
+            return "uds_dgram";
+        case UDS_STREAM:
+            return "uds_stream";
+        default:
+            fprintf(stderr, "Invalid type: %d\n", type);
+            exit(EXIT_FAILURE);
+    }
+}
+
+int send_type_to_server(long port, char *type) {
+    int sock = 0;
+    struct sockaddr_in serv_addr;
+    char *bufferser = type;
+
+    // Create socket
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        printf("\n Socket creation error \n");
+        return -1;
+    }
+    memset(&serv_addr, '0', sizeof(serv_addr));
+
+    // Set server address and port
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(port);
+
+    // Convert IPv4 and IPv6 addresses from text to binary form
+    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) {
+        printf("\nInvalid address/ Address not supported \n");
+        close(sock);
+        return -1;
+    }
+    // Connect to server
+    if (connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+        perror("\nConnection Failed\n");
+        close(sock);
+        return -1;
+    }
+    send(sock, bufferser, strlen(bufferser), 0);
+    close(sock);
+    usleep(50000);
+    return 0;
+}
+
+char *getServerType(int argc, char *argv[]) {
+    int server_fd = -1, new_socket = -1;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    char *buffer = malloc(20);
+
+    // Create server socket
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Set socket options
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Bind socket to port
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(atoi(argv[2]));
+
+    if (bind(server_fd, (struct sockaddr *) &address, sizeof(address)) < 0) {
+        perror("getServer bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen for incoming connections
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // Accept incoming connection
+    if ((new_socket = accept(server_fd, (struct sockaddr *) &address, (socklen_t *) &addrlen)) < 0) {
+        perror("accept");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    int bytes = recv(new_socket, buffer, sizeof(buffer), 0);
+    if (bytes < 0) {
+        perror("recv");
+        close(server_fd);
+        close(new_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    close(server_fd);
+    close(new_socket);
+    return buffer;
+}
+
 int main(int argc, char *argv[]) {
     // Parse the command line arguments
     int is_server = 0;
@@ -817,6 +948,8 @@ int main(int argc, char *argv[]) {
     long port;
     char *type = NULL;
     char *param = NULL;
+    ClientInfo info;
+
 
 //------------------------------------P A R T   A------------------------------------------------------
     if ((strcmp(argv[1], "-c") == 0 && argc == 4) || (strcmp(argv[1], "-s") == 0 && argc == 3)) {
@@ -893,6 +1026,11 @@ int main(int argc, char *argv[]) {
             param = argv[6];
 
             printf("First: ip: %s, port: %ld, type: %s, param: %s\n", ip, port, type, param);
+
+            strncpy(info.type, type, sizeof(info.type) - 1);
+            strncpy(info.param, param, sizeof(info.param) - 1);
+            strncpy(info.ip, ip, sizeof(info.ip) - 1);
+
             // Open the connection
             conn = open_connection(ip, port, type, param, is_server);
 
@@ -915,17 +1053,39 @@ int main(int argc, char *argv[]) {
                 }
                 is_quiet = 1;
             }
-            //ServerInfo *serverInfo = getServerInfo(port);
-            //            split_type_and_param(serverInfo->type, &type, &param);
-            //param = serverInfo->param;
-            //type = serverInfo->type;
-            //printf("Param: %s, Type: %s\n", param, type);
-            //ip = getIP();
-            type = "ipv6";
-            param = "udp";
-            ip = "::1";
+
 
             printf("MAIN: Param: %s, Type: %s\n", param, type);
+
+            char *serverType = getServerType(argc, argv);
+            // printf("Server type: %s\n", serverType);
+            if (strcmp(serverType, "ipv4_tcp") == 0) {
+                type = "ipv4";
+                param = "tcp";
+            } else if (strcmp(serverType, "ipv6_tcp") == 0) {
+                type = "ipv6";
+                param = "tcp";
+            } else if (strcmp(serverType, "ipv4_udp") == 0) {
+                type = "ipv4";
+                param = "udp";
+            } else if (strcmp(serverType, "ipv6_udp") == 0) {
+                type = "ipv6";
+                param = "udp";
+            } else if (strcmp(serverType, "uds_stream") == 0) {
+                type = "uds";
+                param = "stream";
+            } else if (strcmp(serverType, "uds_dgram") == 0) {
+                type = "uds";
+                param = "dgram";
+            } else if (strcmp(serverType, "mmap") == 0) {
+                type = "mmap";
+                param = "filename";
+            } else if (strcmp(serverType, "pipe") == 0) {
+                type = "pipe";
+                param = "filename";
+            }
+            free(serverType);
+
             printf("IP: %s, Port: %ld, Type: %s, Param: %s, server: %d\n", ip, port, type, param, is_server);
 
             conn = open_connection(ip, port, type, param, is_server);

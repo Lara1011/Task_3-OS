@@ -48,7 +48,7 @@ typedef struct {
     long port;
     int socket_fd;
     CommunicationType type;
-    char *filename; // For mmap and pipe
+    char *param; // For mmap and pipe
     int mmap_fd; // For mmap
     char *mmap_addr; // For mmap
     int pipe_fd[2]; // For pipe
@@ -64,6 +64,16 @@ typedef struct {
     long long transmission_time;
 } PerformanceTest;
 
+typedef struct {
+    char type[10];  // type: ipv4, ipv6, mmap, pipe, uds
+    char param[10]; // param: udp, tcp, dgram, stream, file name
+    char ip[40];    // client IP
+} ClientInfo;
+
+char* get_type_str(CommunicationType type);
+
+void send_initial_info_to_server(ClientInfo *info, int sockfd);
+
 void handle_client_pA(int client_sock);
 
 void generate_data(PerformanceTest *test);
@@ -76,7 +86,7 @@ PerformanceTest *create_performance_test();
 
 void report_result(PerformanceTest *test);
 
-Connection *create_connection(char *ip, long port, CommunicationType type, char *filename, int is_server);
+Connection *create_connection(char *ip, long port, CommunicationType type, char *param, int is_server);
 
 Connection *open_connection(char *ip, long port, char *type, char *param, int is_server);
 
@@ -84,22 +94,23 @@ int create_tcp_server_socket(char *ip, long port, int domain);
 int create_udp_server_socket(char *ip, long port, int domain);
 int create_uds_server_socket(char *filename, int is_stream);
 
-int create_tcp_client_socket(char *ip, long port, int domain);
-int create_udp_client_socket(char *ip, long port, int domain);
-int create_uds_client_socket(char *filename, int is_stream);
+int create_tcp_client_socket(char *ip, long port, int domain, char* type);
+int create_udp_client_socket(char *ip, long port, int domain, char* type);
+int create_uds_client_socket(char *filename, long port, int is_stream, char* type);
 
 int create_mmap_file(Connection *connection);
-int create_mmap_filer(Connection *connection);
+int create_mmap_filer(Connection *connection, long port, char* type);
 
 int create_named_pipe(Connection *connection);
-int create_named_pipew(Connection *connection);
+int create_named_pipew(Connection *connection, long port, char* type);
 
 void destroy_connection(Connection *connection);
 
 long send_data(Connection *connection, char *message, int len);
 
 void handle_client_pB(Connection *conn);
-
+int send_type_to_server(long port, char *type);
+char *getServerType(int argc, char *argv[]);
 int main(int argc, char *argv[]);
 
 #endif //TASK_3_OS_STNC_H
